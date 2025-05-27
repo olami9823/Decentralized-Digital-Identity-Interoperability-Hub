@@ -1,103 +1,202 @@
-;; Identity Provider Registry Contract
-;; Manages registration and verification of identity providers
+;; Early Warning Contract
+;; Alerts regulators to systemic risks and potential threats
 
 (define-constant CONTRACT_OWNER tx-sender)
-(define-constant ERR_UNAUTHORIZED (err u100))
-(define-constant ERR_PROVIDER_EXISTS (err u101))
-(define-constant ERR_PROVIDER_NOT_FOUND (err u102))
-(define-constant ERR_INVALID_STATUS (err u103))
+(define-constant ERR_UNAUTHORIZED (err u500))
+(define-constant ERR_INVALID_THRESHOLD (err u501))
+(define-constant ERR_ALERT_NOT_FOUND (err u502))
 
-;; Provider status constants
-(define-constant STATUS_PENDING u0)
-(define-constant STATUS_VERIFIED u1)
-(define-constant STATUS_SUSPENDED u2)
-(define-constant STATUS_REVOKED u3)
+;; Alert severity levels
+(define-constant SEVERITY_LOW u1)
+(define-constant SEVERITY_MEDIUM u2)
+(define-constant SEVERITY_HIGH u3)
+(define-constant SEVERITY_CRITICAL u4)
 
-;; Data structures
-(define-map identity-providers
-  { provider-id: (string-ascii 64) }
+;; Alert types
+(define-constant ALERT_LIQUIDITY_CRISIS "liquidity-crisis")
+(define-constant ALERT_CREDIT_CONCENTRATION "credit-concentration")
+(define-constant ALERT_MARKET_VOLATILITY "market-volatility")
+(define-constant ALERT_CONTAGION_RISK "contagion-risk")
+
+;; Risk thresholds
+(define-map risk-thresholds
+  { metric-type: (string-ascii 50) }
   {
-    name: (string-ascii 128),
-    endpoint: (string-ascii 256),
-    public-key: (buff 33),
-    status: uint,
-    registered-at: uint,
-    verified-at: (optional uint)
+    low-threshold: uint,
+    medium-threshold: uint,
+    high-threshold: uint,
+    critical-threshold: uint
   }
 )
 
-(define-map provider-trust-scores
-  { provider-id: (string-ascii 64) }
-  { score: uint, last-updated: uint }
+;; Active alerts
+(define-map alerts
+  { alert-id: uint }
+  {
+    alert-type: (string-ascii 50),
+    severity: uint,
+    institution-id: uint,
+    metric-value: uint,
+    threshold-breached: uint,
+    description: (string-ascii 500),
+    created-at: uint,
+    acknowledged: bool,
+    resolved: bool
+  }
 )
 
-;; Register a new identity provider
-(define-public (register-provider
-  (provider-id (string-ascii 64))
-  (name (string-ascii 128))
-  (endpoint (string-ascii 256))
-  (public-key (buff 33)))
+;; System-wide alerts
+(define-map system-alerts
+  { alert-id: uint }
+  {
+    alert-type: (string-ascii 50),
+    severity: uint,
+    affected-institutions: uint,
+    systemic-risk-score: uint,
+    description: (string-ascii 500),
+    created-at: uint,
+    acknowledged: bool
+  }
+)
+
+(define-data-var next-alert-id uint u1)
+
+;; Set risk thresholds
+(define-public (set-risk-thresholds
+  (metric-type (string-ascii 50))
+  (low-threshold uint)
+  (medium-threshold uint)
+  (high-threshold uint)
+  (critical-threshold uint))
   (begin
-    (asserts! (is-none (map-get? identity-providers { provider-id: provider-id })) ERR_PROVIDER_EXISTS)
-    (map-set identity-providers
-      { provider-id: provider-id }
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (asserts! (and (< low-threshold medium-threshold)
+                   (< medium-threshold high-threshold)
+                   (< high-threshold critical-threshold)) ERR_INVALID_THRESHOLD)
+
+    (map-set risk-thresholds
+      { metric-type: metric-type }
       {
-        name: name,
-        endpoint: endpoint,
-        public-key: public-key,
-        status: STATUS_PENDING,
-        registered-at: block-height,
-        verified-at: none
+        low-threshold: low-threshold,
+        medium-threshold: medium-threshold,
+        high-threshold: high-threshold,
+        critical-threshold: critical-threshold
       }
     )
-    (ok provider-id)
+    (ok true)
   )
 )
 
-;; Verify an identity provider (admin only)
-(define-public (verify-provider (provider-id (string-ascii 64)))
-  (let ((provider (unwrap! (map-get? identity-providers { provider-id: provider-id }) ERR_PROVIDER_NOT_FOUND)))
+;; Check and create alerts based on risk data
+(define-public (check-risk-levels (institution-id uint) (metric-type (string-ascii 50)) (metric-value uint))
+  (let (
+    (thresholds (unwrap! (map-get? risk-thresholds { metric-type: metric-type }) ERR_INVALID_THRESHOLD))
+    (severity (determine-severity metric-value thresholds))
+  )
+    (if (> severity u0)
+      (create-alert institution-id metric-type severity metric-value)
+      (ok false)
+    )
+  )
+)
+
+;; Determine alert severity based on thresholds
+(define-private (determine-severity (value uint) (thresholds { low-threshold: uint, medium-threshold: uint, high-threshold: uint, critical-threshold: uint }))
+  (if (>= value (get critical-threshold thresholds))
+    SEVERITY_CRITICAL
+    (if (>= value (get high-threshold thresholds))
+      SEVERITY_HIGH
+      (if (>= value (get medium-threshold thresholds))
+        SEVERITY_MEDIUM
+        (if (>= value (get low-threshold thresholds))
+          SEVERITY_LOW
+          u0
+        )
+      )
+    )
+  )
+)
+
+;; Create a new alert
+(define-private (create-alert (institution-id uint) (metric-type (string-ascii 50)) (severity uint) (metric-value uint))
+  (let (
+    (alert-id (var-get next-alert-id))
+    (threshold-breached (get-threshold-for-severity metric-type severity))
+  )
+    (map-set alerts
+      { alert-id: alert-id }
+      {
+        alert-type: metric-type,
+        severity: severity,
+        institution-id: institution-id,
+        metric-value: metric-value,
+        threshold-breached: threshold-breached,
+        description: "Risk threshold breached",
+        created-at: block-height,
+        acknowledged: false,
+        resolved: false
+      }
+    )
+
+    (var-set next-alert-id (+ alert-id u1))
+    (ok true)
+  )
+)
+
+;; Get threshold value for severity level
+(define-private (get-threshold-for-severity (metric-type (string-ascii 50)) (severity uint))
+  (let ((thresholds (unwrap-panic (map-get? risk-thresholds { metric-type: metric-type }))))
+    (if (is-eq severity SEVERITY_CRITICAL)
+      (get critical-threshold thresholds)
+      (if (is-eq severity SEVERITY_HIGH)
+        (get high-threshold thresholds)
+        (if (is-eq severity SEVERITY_MEDIUM)
+          (get medium-threshold thresholds)
+          (get low-threshold thresholds)
+        )
+      )
+    )
+  )
+)
+
+;; Acknowledge an alert
+(define-public (acknowledge-alert (alert-id uint))
+  (let ((alert (unwrap! (map-get? alerts { alert-id: alert-id }) ERR_ALERT_NOT_FOUND)))
     (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
-    (map-set identity-providers
-      { provider-id: provider-id }
-      (merge provider {
-        status: STATUS_VERIFIED,
-        verified-at: (some block-height)
-      })
+
+    (map-set alerts
+      { alert-id: alert-id }
+      (merge alert { acknowledged: true })
     )
     (ok true)
   )
 )
 
-;; Update provider trust score
-(define-public (update-trust-score
-  (provider-id (string-ascii 64))
-  (score uint))
-  (begin
+;; Resolve an alert
+(define-public (resolve-alert (alert-id uint))
+  (let ((alert (unwrap! (map-get? alerts { alert-id: alert-id }) ERR_ALERT_NOT_FOUND)))
     (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
-    (asserts! (is-some (map-get? identity-providers { provider-id: provider-id })) ERR_PROVIDER_NOT_FOUND)
-    (map-set provider-trust-scores
-      { provider-id: provider-id }
-      { score: score, last-updated: block-height }
+
+    (map-set alerts
+      { alert-id: alert-id }
+      (merge alert { resolved: true })
     )
     (ok true)
   )
 )
 
-;; Get provider information
-(define-read-only (get-provider (provider-id (string-ascii 64)))
-  (map-get? identity-providers { provider-id: provider-id })
+;; Get alert details
+(define-read-only (get-alert (alert-id uint))
+  (map-get? alerts { alert-id: alert-id })
 )
 
-;; Get provider trust score
-(define-read-only (get-trust-score (provider-id (string-ascii 64)))
-  (map-get? provider-trust-scores { provider-id: provider-id })
+;; Get risk thresholds
+(define-read-only (get-risk-thresholds (metric-type (string-ascii 50)))
+  (map-get? risk-thresholds { metric-type: metric-type })
 )
 
-;; Check if provider is verified
-(define-read-only (is-provider-verified (provider-id (string-ascii 64)))
-  (match (map-get? identity-providers { provider-id: provider-id })
-    provider (is-eq (get status provider) STATUS_VERIFIED)
-    false
-  )
+;; Check if alert exists for institution and metric
+(define-read-only (has-active-alert (institution-id uint) (metric-type (string-ascii 50)))
+  ;; Simplified check - in real implementation would iterate through alerts
+  false
 )

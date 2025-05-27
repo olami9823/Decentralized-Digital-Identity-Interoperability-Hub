@@ -10,10 +10,6 @@ path = 'contracts/identity-provider-registry.clar'
 clarity_version = 2
 epoch = 2.5
 
-[contracts.identity-provider-registry_]
-path = 'contracts/identity-provider-registry_.clar'
-clarity_version = 2
-epoch = 2.5
 [repl.analysis]
 passes = ['check_checker']
 
